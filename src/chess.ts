@@ -1,19 +1,66 @@
+import {
+  captureOwnPieceValidator,
+  correctTurnValidator,
+  duplicateMoveValidator,
+  fromPieceValidator,
+  inBoundValiator,
+} from './generalValidators';
+import {
+  validAvisorMoveValidator,
+  validBishopMoveValidator,
+  validCannonMoveValidator,
+  validKingMoveValidator,
+  validKnightMoveValidator,
+  validPawnMoveValidator,
+  validRookMoveValidator,
+} from './pieceValidators';
+
 export type Result = {
   ok: boolean;
   message?: string;
 };
 
+export const OK_RESULT: Result = { ok: true };
+
+type Validator = {
+  (from: [number, number], to: [number, number], context: BoardContext): Result;
+};
+
+export type BoardContext = {
+  board: string[][];
+  currentPlayer: 'w' | 'b';
+};
+
+/**
+ * Creates a deep clone of a string matrix (string[][])
+ * @param matrix - The string matrix to clone
+ * @returns A new deep-cloned string matrix
+ */
+function cloneStringMatrix(matrix: string[][]): string[][] {
+  return matrix.map((row) => [...row]);
+}
+
+export function crossedRiver(
+  [row, _col]: [number, number],
+  isWhite = true,
+): boolean {
+  if (isWhite) {
+    return row <= 4;
+  }
+  return row >= 5;
+}
+
 export default class Xiangqi {
   private board: string[][] = [];
   private currentPlayer: 'w' | 'b' = 'w'; // 'w' for red, 'b' for black
-  private moveCount: number = 0;
+  private moveCount = 0;
 
   /**
    * Initialize a Xiangqi game from FEN notation
    * @param fen - Forsyth-Edwards Notation string for Xiangqi
    */
   constructor(
-    fen: string = 'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w 0',
+    fen = 'rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w 0',
   ) {
     this.parseFen(fen);
   }
@@ -118,6 +165,31 @@ export default class Xiangqi {
   }
 
   /**
+   * Convert board coordinates [row, col] to chess notation (e.g. 'e4')
+   * @param coordinates - Board coordinates [row, col]
+   * @returns Chess notation position
+   */
+  private coordinatesToPosition(coordinates: [number, number]): string {
+    const [row, col] = coordinates;
+
+    if (col < 0 || col > 8 || row < 0 || row > 9) {
+      throw new Error(`Coordinates out of bounds: [${row}, ${col}]`);
+    }
+
+    const file = String.fromCharCode('a'.charCodeAt(0) + col);
+    const rank = 10 - row;
+
+    return `${file}${rank}`;
+  }
+
+  private invalidMove(from: [number, number], to: [number, number]) {
+    return {
+      ok: false,
+      message: `Invalid pawn move ${this.coordinatesToPosition(from)} -> ${this.coordinatesToPosition(to)}`,
+    };
+  }
+
+  /**
    * Check if a move is legal
    * This is a simplified implementation and doesn't check all Xiangqi rules
    * @param fromCoords - Starting coordinates [row, col]
@@ -128,35 +200,60 @@ export default class Xiangqi {
     fromCoords: [number, number],
     toCoords: [number, number],
   ): Result {
+    const validators: Validator[] = [
+      inBoundValiator,
+      duplicateMoveValidator,
+      fromPieceValidator,
+      correctTurnValidator,
+      captureOwnPieceValidator,
+      // pinned piece validator
+      // checkMoveValidator: con vua khong duoc duy chuyen vao vi tri dang bi chieu
+      // flyingGeneralValidator: hai con vua khong the doi mat nhau
+    ];
     const [fromRow, fromCol] = fromCoords;
-    const [toRow, toCol] = toCoords;
-
-    if (fromRow === toRow && fromCol === toCol) {
-      return { ok: false, message: "Can't move to the same position." };
-    }
-
     const piece = this.board[fromRow][fromCol];
-    if (!piece) {
-      return { ok: false, message: 'No piece at the starting position.' };
+
+    switch (piece.toLowerCase()) {
+      case 'p':
+        validators.push(validPawnMoveValidator);
+        break;
+      case 'c':
+        validators.push(validCannonMoveValidator);
+        break;
+      case 'n':
+        validators.push(validKnightMoveValidator);
+        break;
+      case 'b':
+        validators.push(validBishopMoveValidator);
+        break;
+      case 'a':
+        validators.push(validAvisorMoveValidator);
+        break;
+      case 'k':
+        validators.push(validKingMoveValidator);
+        break;
+      case 'r':
+        validators.push(validRookMoveValidator);
+        break;
+
+      default:
+        throw new Error(`Piece ${piece} not implemented`);
     }
 
-    const isPieceRed = piece === piece.toUpperCase();
-    if (
-      (isPieceRed && this.currentPlayer !== 'w') ||
-      (!isPieceRed && this.currentPlayer !== 'b')
-    ) {
-      return { ok: false, message: "Not the current player's piece." };
-    }
-
-    const targetPiece = this.board[toRow][toCol];
-    if (targetPiece) {
-      const isTargetRed = targetPiece === targetPiece.toUpperCase();
-      if ((isPieceRed && isTargetRed) || (!isPieceRed && !isTargetRed)) {
-        return { ok: false, message: "Can't capture own piece." };
+    for (const validator of validators) {
+      const clonedBoard = cloneStringMatrix(this.board);
+      const fromCoordsCloned: [number, number] = [...fromCoords];
+      const toCoordsCloned: [number, number] = [...toCoords];
+      const result = validator(fromCoordsCloned, toCoordsCloned, {
+        board: clonedBoard,
+        currentPlayer: this.currentPlayer,
+      });
+      if (!result.ok) {
+        return this.invalidMove(fromCoords, toCoords);
       }
     }
 
-    return { ok: true };
+    return OK_RESULT;
   }
 
   /**
@@ -170,7 +267,6 @@ export default class Xiangqi {
 
     const checkResult = this.isLegalMove(fromCoords, toCoords);
     if (!checkResult.ok) {
-      console.error(checkResult.message);
       throw new Error(`Invalid move: ${from} -> ${to}`);
     }
 
@@ -204,7 +300,7 @@ export default class Xiangqi {
     };
   }
 
-  isCheckmate(color: "w" | "b" = "w"): boolean {
+  isCheckmate(color: 'w' | 'b' = 'w'): boolean {
     // ANH LÀM Ở ĐÂY!!!!!!!!!
     throw new Error('Not implemented');
   }
@@ -214,18 +310,49 @@ export default class Xiangqi {
     throw new Error('Not implemented');
   }
 
-  isInCheck(color: "w" | "b" = "w"): boolean {
+  isInCheck(color: 'w' | 'b' = 'w'): boolean {
     // ANH LÀM Ở ĐÂY!!!!!!!!!
     throw new Error('Not implemented');
   }
 
-  isStalemate(color: "w" | "b" = "w"): boolean {
+  isStalemate(color: 'w' | 'b' = 'w'): boolean {
     // ANH LÀM Ở ĐÂY!!!!!!!!!
     throw new Error('Not implemented');
   }
 
-  getWinner(): "w" | "b" | null {
+  getWinner(): 'w' | 'b' | null {
     // ANH LÀM Ở ĐÂY!!!!!!!!!
     throw new Error('Not implemented');
+  }
+
+  /**
+   * Rotates a 10x9 string matrix by 180 degrees
+   * @param matrix - A 10x9 2D array of strings
+   * @returns Rotated 10x9 matrix
+   */
+  private rotateMatrix180(matrix: string[][]): string[][] {
+    if (matrix.length !== 10 || matrix.some((row) => row.length !== 9)) {
+      throw new Error('Matrix must be of size 10x9');
+    }
+
+    return matrix.map((row) => [...row].reverse()).reverse();
+  }
+
+  /**
+   * Converts a coordinate [row, col] after a 180-degree rotation on a 10x9 board
+   * @param coord - The coordinate [row, col] before rotation
+   * @returns The new coordinate [row, col] after rotation
+   */
+  private rotateCoordinate180(coord: [number, number]): [number, number] {
+    const [row, col] = coord;
+
+    if (row < 0 || row >= 10 || col < 0 || col >= 9) {
+      throw new Error(`Coordinate out of bounds: [${row}, ${col}]`);
+    }
+
+    const newRow = 9 - row;
+    const newCol = 8 - col;
+
+    return [newRow, newCol];
   }
 }
